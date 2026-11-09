@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MC Stress Console</title>
+<style>
+  :root{--bg:#07090c;--pnl:#0e1318;--ln:#1d2a35;--tx:#c8d6e0;--dim:#5d707e;--grn:#33ff88;--red:#ff4d5e;--amb:#ffb347}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  header{padding:14px 18px;border-bottom:1px solid var(--ln);display:flex;gap:12px;align-items:baseline}
+  h1{font-size:15px;margin:0;letter-spacing:2px;color:var(--grn)}
+  .tag{color:var(--dim);font-size:11px}
+  main{padding:16px 18px;max-width:1100px}
+  .panel{background:var(--pnl);border:1px solid var(--ln);border-radius:6px;padding:14px;margin-bottom:14px}
+  label{display:block;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+  input,select{width:100%;background:#05080a;border:1px solid var(--ln);color:var(--tx);padding:8px;border-radius:4px;font:inherit}
+  input:focus,select:focus{outline:none;border-color:var(--grn)}
+  .grid{display:grid;grid-template-columns:2fr 1fr 1.4fr 1fr 1fr 1fr;gap:10px}
+  .row{display:flex;gap:10px;margin-top:12px}
+  button{flex:1;padding:10px;border:1px solid var(--ln);background:#0a1015;color:var(--tx);border-radius:4px;font:inherit;cursor:pointer;letter-spacing:1px}
+  button:hover{border-color:var(--grn);color:var(--grn)}
+  button.go{background:var(--grn);color:#04140a;border-color:var(--grn);font-weight:700}
+  button.stop{background:var(--red);color:#fff;border-color:var(--red);font-weight:700}
+  .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;text-align:center}
+  .stat b{display:block;font-size:19px;color:var(--grn)}
+  .stat span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:1px}
+  canvas{width:100%;height:130px;display:block}
+  #log{height:150px;overflow:auto;font-size:11px;color:var(--dim)}
+  #log div span{color:var(--grn)}
+  #motd{white-space:pre-wrap;font-size:11px;color:var(--dim)}
+  .hint{color:var(--dim);font-size:11px;margin-top:6px}
+</style>
+</head>
+<body>
+<header><h1>MC STRESS CONSOLE</h1><span class="tag">minecraft-aware flood engine</span></header>
+<main>
+  <div class="panel">
+    <div class="grid">
+      <div><label>Target host</label><input id="target" placeholder="play.example.com" value=""></div>
+      <div><label>Port</label><input id="port" placeholder="auto" value=""></div>
+      <div><label>Method</label><select id="method">
+        <option value="status">status (amp)</option>
+        <option value="handshake">handshake</option>
+        <option value="login">login (heavy)</option>
+        <option value="connect">connect</option>
+        <option value="mixed">mixed</option>
+        <option value="bedrock">bedrock udp</option>
+        <option value="udp">raw udp</option>
+        <option value="udpmix">udp mixed</option>
+      </select></div>
+      <div><label>Concurrency</label><input id="concurrency" type="number" value="300"></div>
+      <div><label>Duration s</label><input id="duration" type="number" value="60"></div>
+      <div><label>Login hold s</label><input id="hold" type="number" value="0" step="0.5"></div>
+    </div>
+    <div class="row">
+      <button class="go" id="startBtn">START</button>
+      <button class="stop" id="stopBtn">STOP</button>
+      <button id="probeBtn">PROBE</button>
+    </div>
+    <div class="hint">Leave port empty for auto (25565 java / 19132 bedrock). SRV records are resolved automatically.</div>
+  </div>
+
+  <div class="panel">
+    <div class="stats">
+      <div class="stat"><b id="s_pps">0</b><span>pps</span></div>
+      <div class="stat"><b id="s_mbps">0</b><span>mbit</span></div>
+      <div class="stat"><b id="s_conns">0</b><span>conns</span></div>
+      <div class="stat"><b id="s_resp">0</b><span>responses</span></div>
+      <div class="stat"><b id="s_err">0</b><span>errors</span></div>
+      <div class="stat"><b id="s_up">0</b><span>uptime</span></div>
+    </div>
+  </div>
+
+  <div class="panel"><canvas id="chart" width="1000" height="130"></canvas></div>
+  <div class="panel"><label>Target status</label><div id="motd">no probe yet</div></div>
+  <div class="panel"><label>Console</label><div id="log"></div></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const series = new Array(120).fill(0);
+const cv = $("#chart"), cx = cv.getContext("2d");
+
+function draw(){
+  const w = cv.width, h = cv.height;
+  cx.clearRect(0,0,w,h);
+  const max = Math.max(1, ...series);
+  cx.strokeStyle = "#1d2a35"; cx.lineWidth = 1;
+  for (let i=0;i<4;i++){ const y=h*i/4; cx.beginPath(); cx.moveTo(0,y); cx.lineTo(w,y); cx.stroke(); }
+  cx.beginPath();
+  series.forEach((v,i)=>{
+    const x = i*(w/(series.length-1));
+    const y = h - (v/max)*(h-6) - 3;
+    i ? cx.lineTo(x,y) : cx.moveTo(x,y);
+  });
+  cx.strokeStyle = "#33ff88"; cx.lineWidth = 2; cx.stroke();
+  cx.lineTo(w,h); cx.lineTo(0,h); cx.closePath();
+  cx.fillStyle = "rgba(51,255,136,.08)"; cx.fill();
+}
+draw();
+
+const es = new EventSource("/api/stream");
+es.onmessage = e => {
+  const d = JSON.parse(e.data);
+  if (d.idle){ return; }
+  $("#s_pps").textContent = d.pps;
+  $("#s_mbps").textContent = d.mbps;
+  $("#s_conns").textContent = d.conns;
+  $("#s_resp").textContent = d.responses;
+  $("#s_err").textContent = d.errors;
+  $("#s_up").textContent = d.uptime;
+  series.push(d.pps); series.shift(); draw();
+};
+
+async function refreshLog(){
+  const r = await fetch("/api/log"); const j = await r.json();
+  $("#log").innerHTML = j.map(x => `<div><span>${x.t}</span> ${x.m}</div>`).join("");
+  $("#log").scrollTop = 1e6;
+}
+setInterval(refreshLog, 1500);
+
+$("#startBtn").onclick = async () => {
+  const body = {
+    target: $("#target").value.trim(),
+    method: $("#method").value,
+    concurrency: parseInt($("#concurrency").value) || 300,
+    duration: parseInt($("#duration").value) || 60,
+    hold: parseFloat($("#hold").value) || 0,
+  };
+  const p = $("#port").value.trim();
+  if (p) body.port = parseInt(p);
+  if (!body.target){ alert("target required"); return; }
+  const r = await fetch("/api/start", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok) alert(j.detail || "failed");
+  else $("#motd").textContent = `resolved -> ${j.host}:${j.port}`;
+  refreshLog();
+};
+
+$("#stopBtn").onclick = async () => { await fetch("/api/stop", {method:"POST"}); refreshLog(); };
+
+$("#probeBtn").onclick = async () => {
+  const t = $("#target").value.trim(); const p = parseInt($("#port").value) || 25565;
+  if (!t){ alert("target required"); return; }
+  $("#motd").textContent = "probing...";
+  const r = await fetch(`/api/probe?target=${encodeURIComponent(t)}&port=${p}`);
+  const j = await r.json();
+  if (!r.ok){ $("#motd").textContent = j.detail || "probe failed"; return; }
+  const motd = typeof j.motd === "string" ? j.motd : JSON.stringify(j.motd);
+  $("#motd").textContent =
+    `version: ${j.version} (proto ${j.protocol})\nplayers: ${j.players_online}/${j.players_max}\nfavicon: ${j.has_favicon}\nmotd: ${motd}`;
+};
+</script>
+</body>
+</html>
